@@ -6,6 +6,14 @@
 npm install @iamkaf/seam zod
 ```
 
+From a fresh Seam checkout, verify the working todo example with:
+
+```bash
+npm install
+npm run example:todo
+npm run check
+```
+
 ## 2. Add Tables
 
 Run Seam's D1 schema migration in your app database.
@@ -85,6 +93,14 @@ function Tasks() {
   ));
 }
 ```
+
+The same flow is available as a runnable example in `examples/todo`:
+
+```bash
+npm run example:todo
+```
+
+That example wires a Seam server, in-memory D1 test adapter, framework-agnostic client, React projections, bootstrap, pull sync, and optimistic create/toggle mutations together.
 
 ## 6. Sync Rules
 

@@ -11,7 +11,8 @@ import { createSeamClient, type SeamClient } from "../client/index.js";
 import type { SeamRecord, SeamScope } from "../shared/types.js";
 
 interface SeamProviderProps {
-  url: string;
+  url?: string;
+  client?: SeamClient;
   scopes: SeamScope[];
   fetch?: typeof fetch;
   children?: ReactNode;
@@ -35,11 +36,15 @@ const SeamContext = createContext<SeamClient | null>(null);
 
 export function SeamProvider(props: SeamProviderProps) {
   const client = useMemo(
-    () => createSeamClient({ url: props.url, fetch: props.fetch }),
-    [props.url, props.fetch],
+    () => props.client ?? createSeamClient({ url: props.url ?? "/seam", fetch: props.fetch }),
+    [props.client, props.url, props.fetch],
   );
 
   useEffect(() => {
+    if (props.scopes.length === 0) {
+      return;
+    }
+
     void client.bootstrap({ scopes: props.scopes }).then(() => client.sync());
   }, [client, props.scopes]);
 

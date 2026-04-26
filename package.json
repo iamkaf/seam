@@ -10,10 +10,11 @@
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {
-    "lint": "oxlint src vitest.config.ts",
+    "lint": "oxlint src examples vitest.config.ts",
     "format": "oxfmt --check .",
     "test": "vitest run",
-    "check": "npm run lint && npm run format && npm run test"
+    "check": "npm run lint && npm run format && npm run test",
+    "example:todo": "vitest run examples/todo/todo-example.test.ts"
   },
   "peerDependencies": {
     "react": "^19.2.0",
