@@ -1,0 +1,27 @@
+{
+  "name": "@iamkaf/seam",
+  "version": "0.0.0",
+  "type": "module",
+  "private": false,
+  "exports": {
+    "./server": "./src/server/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint src vitest.config.ts",
+    "format": "oxfmt --check .",
+    "test": "vitest run",
+    "check": "npm run lint && npm run format && npm run test"
+  },
+  "peerDependencies": {
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "oxfmt": "^0.16.0",
+    "oxlint": "^1.29.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14",
+    "zod": "^4.1.12"
+  }
+}
