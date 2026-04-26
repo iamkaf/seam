@@ -1,4 +1,5 @@
 import { seamD1Schema } from "../server/schema.js";
+import type { CommitEffect } from "../server/index.js";
 import type { SeamScope } from "../shared/types.js";
 
 interface StoredRecord {
@@ -43,6 +44,7 @@ interface MutationReceipt {
 export interface TestD1 {
   schemaApplied: boolean;
   tables: Set<string>;
+  appTables: Map<string, Record<string, unknown>[]>;
   records: StoredRecord[];
   seqLog: SeqLogEntry[];
   receipts: MutationReceipt[];
@@ -50,6 +52,9 @@ export interface TestD1 {
   tableNames(): string[];
   seqLogEntries(): SeqLogEntry[];
   receiptEntries(): MutationReceipt[];
+  createAppTable(name: string): void;
+  appRows(name: string): Record<string, unknown>[];
+  prepareAppInsert(tableName: string, row: Record<string, unknown>): CommitEffect;
   failNextReceiptInsert(): void;
   forceRecordVersion(id: string, version: number): void;
   runMutationBatch<T>(operation: () => Promise<T>): Promise<T>;
@@ -99,6 +104,7 @@ export function createTestD1(): TestD1 {
   return {
     schemaApplied: false,
     tables: new Set(),
+    appTables: new Map(),
     records: [],
     seqLog: [],
     receipts: [],
@@ -111,6 +117,26 @@ export function createTestD1(): TestD1 {
     },
     receiptEntries() {
       return [...this.receipts];
+    },
+    createAppTable(name) {
+      this.appTables.set(name, []);
+    },
+    appRows(name) {
+      return this.appTables.get(name) ?? [];
+    },
+    prepareAppInsert(tableName, row) {
+      return {
+        tableName,
+        execute: () => {
+          const rows = this.appTables.get(tableName);
+
+          if (!rows) {
+            throw new Error(`Unknown app table: ${tableName}`);
+          }
+
+          rows.push(row);
+        },
+      };
     },
     failNextReceiptInsert() {
       this.shouldFailNextReceiptInsert = true;
@@ -126,6 +152,12 @@ export function createTestD1(): TestD1 {
       const records = this.records.map((record) => ({ ...record, data: { ...record.data } }));
       const seqLog = this.seqLog.map((entry) => ({ ...entry }));
       const receipts = this.receipts.map((receipt) => ({ ...receipt }));
+      const appTables = new Map(
+        [...this.appTables.entries()].map(([name, rows]) => [
+          name,
+          rows.map((row) => ({ ...row })),
+        ]),
+      );
 
       try {
         return await operation();
@@ -133,6 +165,7 @@ export function createTestD1(): TestD1 {
         this.records = records;
         this.seqLog = seqLog;
         this.receipts = receipts;
+        this.appTables = appTables;
         throw error;
       }
     },

@@ -17,7 +17,7 @@ export interface SeamRecord<T = Record<string, unknown>> {
   deletedAt?: string;
 }
 
-export type SeamErrorCode =
+type SeamErrorCode =
   | "UNAUTHORIZED"
   | "FORBIDDEN"
   | "NOT_FOUND"

@@ -129,6 +129,14 @@ export async function handleMutate<TMutations extends Record<string, CreateMutat
         });
       }
 
+      for (const effect of commit.effects ?? []) {
+        if (isSeamCoreTable(effect.tableName)) {
+          throw new SeamError("INVALID", "Commit effects cannot write Seam core tables");
+        }
+
+        await effect.execute();
+      }
+
       const records = storedRecords.map(toPublicRecord);
       const successfulResponse = {
         ok: true,
@@ -174,4 +182,10 @@ export async function handleMutate<TMutations extends Record<string, CreateMutat
       400,
     );
   }
+}
+
+function isSeamCoreTable(tableName: string): boolean {
+  return ["records", "seq_log", "seam_batch_assertions", "mutation_receipts", "outbox"].includes(
+    tableName,
+  );
 }

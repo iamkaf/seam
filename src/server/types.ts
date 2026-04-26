@@ -48,6 +48,12 @@ export type SeamWrite = CreateWrite | UpdateWrite | DeleteWrite;
 export interface MutationCommit {
   writes: SeamWrite[];
   primaryRecordId?: string;
+  effects?: CommitEffect[];
+}
+
+export interface CommitEffect {
+  tableName: string;
+  execute(): Promise<void> | void;
 }
 
 type ScopeResolver<TInput> = {
@@ -128,7 +134,7 @@ export interface SeqLogEntry {
   version: number;
 }
 
-export interface SeqScanRequest {
+interface SeqScanRequest {
   scopes: SeamScope[];
   afterSeq: number;
   untilSeq?: number;
@@ -150,7 +156,7 @@ export interface StoredRecord {
   lastOpId: string;
 }
 
-export interface SeqLogInsert {
+interface SeqLogInsert {
   opId: string;
   scopeKind: string;
   scopeId: string;
@@ -162,7 +168,7 @@ export interface SeqLogInsert {
   version: number;
 }
 
-export interface UpdateRecordWrite {
+interface UpdateRecordWrite {
   id: string;
   type: string;
   expectedVersion: number;
@@ -172,7 +178,7 @@ export interface UpdateRecordWrite {
   lastOpId: string;
 }
 
-export interface DeleteRecordWrite {
+interface DeleteRecordWrite {
   id: string;
   type: string;
   expectedVersion: number;
@@ -181,7 +187,7 @@ export interface DeleteRecordWrite {
   lastOpId: string;
 }
 
-export interface MutationReceipt {
+interface MutationReceipt {
   actorId: string;
   clientMutationId: string;
   requestHash: string;

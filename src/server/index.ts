@@ -10,6 +10,7 @@ export type {
   CreateMutationDefinition,
   CreateSeamServerOptions,
   CreateWrite,
+  CommitEffect,
   DeleteWrite,
   MutationCommit,
   RecordType,
