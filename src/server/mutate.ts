@@ -84,38 +84,56 @@ export async function handleMutate<TMutations extends Record<string, CreateMutat
       current: current ? toPublicRecord(current) : (undefined as unknown as SeamRecord),
     });
 
-    if (commit.writes.length !== 1) {
-      throw new SeamError("INVALID", "Only single-record mutations are supported in this slice");
+    if (commit.writes.length < 1 || commit.writes.length > 25) {
+      throw new SeamError("INVALID", "Write set size must be between 1 and 25");
     }
 
-    const write = commit.writes[0];
-    const recordType = recordTypes.get(write.type);
+    for (const write of commit.writes) {
+      if (!recordTypes.has(write.type)) {
+        throw new SeamError("INVALID", "Unknown record type");
+      }
 
-    if (!recordType) {
-      throw new SeamError("INVALID", "Unknown record type");
+      if (
+        write.op === "create" &&
+        (write.scope.kind !== scope.kind || write.scope.id !== scope.id)
+      ) {
+        throw new SeamError("INVALID", "All writes must use the mutation scope");
+      }
     }
 
     const responseBody = await options.db.runMutationBatch(async () => {
       const now = new Date().toISOString();
       const opId = crypto.randomUUID();
-      const storedRecord = await commitWrite(options.db, write, recordType, actorId, now, opId);
-      const seq = await options.db.appendSeqLog({
-        opId,
-        scopeKind: storedRecord.scopeKind,
-        scopeId: storedRecord.scopeId,
-        recordType: storedRecord.type,
-        recordId: storedRecord.id,
-        mutationType: requestBody.mutation,
-        actorId,
-        timestamp: now,
-        version: storedRecord.version,
-      });
+      const storedRecords = [];
+      let seq = 0;
 
-      const record = toPublicRecord(storedRecord);
+      for (const write of commit.writes) {
+        const recordType = recordTypes.get(write.type);
+
+        if (!recordType) {
+          throw new SeamError("INVALID", "Unknown record type");
+        }
+
+        const storedRecord = await commitWrite(options.db, write, recordType, actorId, now, opId);
+        storedRecords.push(storedRecord);
+        seq = await options.db.appendSeqLog({
+          opId,
+          scopeKind: storedRecord.scopeKind,
+          scopeId: storedRecord.scopeId,
+          recordType: storedRecord.type,
+          recordId: storedRecord.id,
+          mutationType: requestBody.mutation,
+          actorId,
+          timestamp: now,
+          version: storedRecord.version,
+        });
+      }
+
+      const records = storedRecords.map(toPublicRecord);
       const successfulResponse = {
         ok: true,
-        records: [record],
-        record,
+        records,
+        record: records[0],
         seq,
         clientMutationId: requestBody.clientMutationId,
       };
@@ -125,8 +143,8 @@ export async function handleMutate<TMutations extends Record<string, CreateMutat
         clientMutationId: requestBody.clientMutationId,
         requestHash,
         seq,
-        scopeKind: storedRecord.scopeKind,
-        scopeId: storedRecord.scopeId,
+        scopeKind: scope.kind,
+        scopeId: scope.id,
         responseJson: JSON.stringify(successfulResponse),
         createdAt: now,
       });
