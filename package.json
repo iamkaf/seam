@@ -5,6 +5,7 @@
   "private": false,
   "exports": {
     "./client": "./src/client/index.ts",
+    "./react": "./src/react/index.ts",
     "./server": "./src/server/index.ts",
     "./testing": "./src/testing/index.ts"
   },
@@ -15,12 +16,17 @@
     "check": "npm run lint && npm run format && npm run test"
   },
   "peerDependencies": {
+    "react": "^19.2.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/react": "^19.2.14",
+    "@types/react-test-renderer": "^19.1.0",
     "oxfmt": "^0.16.0",
     "oxlint": "^1.29.0",
+    "react": "^19.2.5",
+    "react-test-renderer": "^19.2.5",
     "typescript": "^5.9.3",
     "vitest": "^4.0.14",
     "zod": "^4.1.12"
