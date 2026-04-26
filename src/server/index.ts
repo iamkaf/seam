@@ -62,11 +62,17 @@ export interface CreateMutationDefinition<TInput extends z.ZodType = z.ZodType> 
 }
 
 export interface SeamDatabase {
+  runMutationBatch<T>(operation: () => Promise<T>): Promise<T>;
   getRecord(id: string): Promise<StoredRecord | undefined>;
+  getMutationReceipt(
+    actorId: string,
+    clientMutationId: string,
+  ): Promise<MutationReceipt | undefined>;
   createRecord(record: StoredRecord): Promise<void>;
   updateRecord(write: UpdateRecordWrite): Promise<StoredRecord | undefined>;
   deleteRecord(write: DeleteRecordWrite): Promise<StoredRecord | undefined>;
   appendSeqLog(entry: SeqLogInsert): Promise<number>;
+  createMutationReceipt(receipt: MutationReceipt): Promise<void>;
 }
 
 export interface CreateSeamServerOptions<
@@ -132,6 +138,17 @@ interface DeleteRecordWrite {
   lastOpId: string;
 }
 
+interface MutationReceipt {
+  actorId: string;
+  clientMutationId: string;
+  requestHash: string;
+  seq: number;
+  scopeKind: string;
+  scopeId: string;
+  responseJson: string;
+  createdAt: string;
+}
+
 export function defineRecordType<TSchema extends z.ZodType>(
   name: string,
   definition: { schema: TSchema },
@@ -172,6 +189,18 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
         if (!seam.actorId || seam.actorType === "anonymous") {
           throw new SeamError("UNAUTHORIZED");
         }
+        const actorId = seam.actorId;
+
+        const requestHash = await hashMutationRequest(requestBody);
+        const receipt = await options.db.getMutationReceipt(actorId, requestBody.clientMutationId);
+
+        if (receipt) {
+          if (receipt.requestHash !== requestHash) {
+            throw new SeamError("IDEMPOTENCY_KEY_REUSED");
+          }
+
+          return json(JSON.parse(receipt.responseJson));
+        }
 
         const input = mutation.input.parse(requestBody.input);
         const current = mutation.record
@@ -200,37 +229,46 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
           throw new SeamError("INVALID", "Unknown record type");
         }
 
-        const now = new Date().toISOString();
-        const opId = crypto.randomUUID();
-        const storedRecord = await commitWrite(
-          options.db,
-          write,
-          recordType,
-          seam.actorId,
-          now,
-          opId,
-        );
-        const seq = await options.db.appendSeqLog({
-          opId,
-          scopeKind: storedRecord.scopeKind,
-          scopeId: storedRecord.scopeId,
-          recordType: storedRecord.type,
-          recordId: storedRecord.id,
-          mutationType: requestBody.mutation,
-          actorId: seam.actorId,
-          timestamp: now,
-          version: storedRecord.version,
+        const responseBody = await options.db.runMutationBatch(async () => {
+          const now = new Date().toISOString();
+          const opId = crypto.randomUUID();
+          const storedRecord = await commitWrite(options.db, write, recordType, actorId, now, opId);
+          const seq = await options.db.appendSeqLog({
+            opId,
+            scopeKind: storedRecord.scopeKind,
+            scopeId: storedRecord.scopeId,
+            recordType: storedRecord.type,
+            recordId: storedRecord.id,
+            mutationType: requestBody.mutation,
+            actorId,
+            timestamp: now,
+            version: storedRecord.version,
+          });
+
+          const record = toPublicRecord(storedRecord);
+          const successfulResponse = {
+            ok: true,
+            records: [record],
+            record,
+            seq,
+            clientMutationId: requestBody.clientMutationId,
+          };
+
+          await options.db.createMutationReceipt({
+            actorId,
+            clientMutationId: requestBody.clientMutationId,
+            requestHash,
+            seq,
+            scopeKind: storedRecord.scopeKind,
+            scopeId: storedRecord.scopeId,
+            responseJson: JSON.stringify(successfulResponse),
+            createdAt: now,
+          });
+
+          return successfulResponse;
         });
 
-        const record = toPublicRecord(storedRecord);
-
-        return json({
-          ok: true,
-          records: [record],
-          record,
-          seq,
-          clientMutationId: requestBody.clientMutationId,
-        });
+        return json(responseBody);
       } catch (error) {
         if (error instanceof SeamError) {
           return json(
@@ -243,10 +281,46 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
           );
         }
 
-        return json({ ok: false, error: { code: "INVALID", message: "Invalid request" } }, 400);
+        return json(
+          {
+            ok: false,
+            error: { code: "INVALID", message: "Invalid request" },
+            clientMutationId: body.clientMutationId,
+          },
+          400,
+        );
       }
     },
   };
+}
+
+async function hashMutationRequest(body: MutateRequest): Promise<string> {
+  const canonical = JSON.stringify({
+    mutation: body.mutation,
+    input: sortJson(body.input),
+    id: body.id,
+    expectedVersion: body.expectedVersion,
+  });
+  const bytes = new TextEncoder().encode(canonical);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, sortJson(nested)]),
+    );
+  }
+
+  return value;
 }
 
 function resolveCreateScope<TInput>(
