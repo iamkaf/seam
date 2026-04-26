@@ -4,6 +4,7 @@
   "type": "module",
   "private": false,
   "exports": {
+    "./client": "./src/client/index.ts",
     "./server": "./src/server/index.ts",
     "./testing": "./src/testing/index.ts"
   },
