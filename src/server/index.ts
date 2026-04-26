@@ -8,6 +8,15 @@ export interface SeamContext {
   actorType: "anonymous" | "user" | "token" | "service";
 }
 
+export type SeamAuthorizeAction = "bootstrap" | "pull" | "create" | "mutate";
+
+export interface SeamAuthorizeInput {
+  ctx: SeamContext;
+  scope: SeamScope;
+  action: SeamAuthorizeAction;
+  record?: SeamRecord;
+}
+
 export interface RecordType<TSchema extends z.ZodType = z.ZodType> {
   name: string;
   schema: TSchema;
@@ -85,6 +94,7 @@ export interface CreateSeamServerOptions<
   db: SeamDatabase;
   records: RecordType[];
   resolveContext: (request: Request, env?: unknown) => SeamContext | Promise<SeamContext>;
+  authorize?: (input: SeamAuthorizeInput) => boolean | Promise<boolean>;
   mutations: TMutations;
 }
 
@@ -201,11 +211,11 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
       const url = new URL(request.url);
 
       if (request.method === "POST" && url.pathname === "/seam/sync/bootstrap") {
-        return handleBootstrap(options, request);
+        return handleBootstrap(options, request, env);
       }
 
       if (request.method === "POST" && url.pathname === "/seam/sync/pull") {
-        return handlePull(options, request);
+        return handlePull(options, request, env);
       }
 
       if (request.method !== "POST" || url.pathname !== "/seam/mutate") {
@@ -246,12 +256,34 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
         }
 
         const input = mutation.input.parse(requestBody.input);
-        const current = mutation.record
-          ? await loadCurrent(options.db, requestBody, mutation.record)
-          : undefined;
+        const current = mutation.record ? await loadCurrent(options.db, requestBody) : undefined;
         const scope = current
           ? { kind: current.scopeKind, id: current.scopeId }
           : resolveCreateScope(mutation, input);
+
+        if (current) {
+          const allowed = await authorize(options, {
+            ctx: seam,
+            scope,
+            action: "mutate",
+            record: toPublicRecord(current),
+          });
+
+          if (!allowed) {
+            throw new SeamError("NOT_FOUND");
+          }
+
+          if (current.type !== mutation.record) {
+            throw new SeamError("TYPE_MISMATCH");
+          }
+
+          if (current.version !== requestBody.expectedVersion) {
+            throw new SeamError("VERSION_CONFLICT", "Version conflict", toPublicRecord(current));
+          }
+        } else if (!(await authorize(options, { ctx: seam, scope, action: "create" }))) {
+          throw new SeamError("FORBIDDEN");
+        }
+
         const commit = await mutation.execute(input, {
           seam,
           scope,
@@ -340,27 +372,66 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
 async function handleBootstrap(
   options: CreateSeamServerOptions<Record<string, CreateMutationDefinition>>,
   request: Request,
+  env: unknown,
 ): Promise<Response> {
   try {
     const body = (await request.json()) as BootstrapRequest;
-    const records = await options.db.listRecordsForScopes(body.scopes ?? []);
+    const ctx = await options.resolveContext(request, env);
+    const scopes = body.scopes ?? [];
+    const authorizedScopes = [];
+    const revokedScopes = [];
+
+    for (const scope of scopes) {
+      if (await authorize(options, { ctx, scope, action: "bootstrap" })) {
+        authorizedScopes.push(scope);
+      } else {
+        revokedScopes.push(scope);
+      }
+    }
+
+    const records = await options.db.listRecordsForScopes(authorizedScopes);
     const seq = await options.db.getMaxSeq();
 
-    return json({ records: records.map(toPublicRecord), seq });
+    return json({
+      records: records.map(toPublicRecord),
+      seq,
+      revokedScopes: revokedScopes.length > 0 ? revokedScopes : undefined,
+    });
   } catch {
     return json({ ok: false, error: { code: "INVALID", message: "Invalid request" } }, 400);
   }
 }
 
+async function authorize(
+  options: CreateSeamServerOptions<Record<string, CreateMutationDefinition>>,
+  input: SeamAuthorizeInput,
+): Promise<boolean> {
+  return options.authorize ? options.authorize(input) : true;
+}
+
 async function handlePull(
   options: CreateSeamServerOptions<Record<string, CreateMutationDefinition>>,
   request: Request,
+  env: unknown,
 ): Promise<Response> {
   try {
     const body = (await request.json()) as PullRequest;
+    const ctx = await options.resolveContext(request, env);
+    const scopes = body.scopes ?? [];
+    const authorizedScopes = [];
+    const revokedScopes = [];
+
+    for (const scope of scopes) {
+      if (await authorize(options, { ctx, scope, action: "pull" })) {
+        authorizedScopes.push(scope);
+      } else {
+        revokedScopes.push(scope);
+      }
+    }
+
     const limit = Math.min(body.limit ?? 500, 1000);
     const entries = await options.db.listSeqForScopes({
-      scopes: body.scopes ?? [],
+      scopes: authorizedScopes,
       afterSeq: body.afterSeq,
       untilSeq: body.untilSeq,
       limit,
@@ -396,6 +467,7 @@ async function handlePull(
       records: materialized.map(toPublicRecord),
       seq: responseSeq,
       hasMore,
+      revokedScopes: revokedScopes.length > 0 ? revokedScopes : undefined,
     });
   } catch {
     return json({ ok: false, error: { code: "INVALID", message: "Invalid request" } }, 400);
@@ -442,11 +514,7 @@ function resolveCreateScope<TInput>(
   return mutation.scope(input);
 }
 
-async function loadCurrent(
-  db: SeamDatabase,
-  body: MutateRequest,
-  recordType: string,
-): Promise<StoredRecord> {
+async function loadCurrent(db: SeamDatabase, body: MutateRequest): Promise<StoredRecord> {
   if (!body.id || body.expectedVersion === undefined) {
     throw new SeamError("INVALID", "id and expectedVersion required");
   }
@@ -455,14 +523,6 @@ async function loadCurrent(
 
   if (!current || current.deletedAt) {
     throw new SeamError("NOT_FOUND");
-  }
-
-  if (current.type !== recordType) {
-    throw new SeamError("TYPE_MISMATCH");
-  }
-
-  if (current.version !== body.expectedVersion) {
-    throw new SeamError("VERSION_CONFLICT", "Version conflict", toPublicRecord(current));
   }
 
   return current;
