@@ -856,6 +856,14 @@ A global sequence leaks cross-scope activity through cursor gaps. Apps where act
 
 WebSocket realtime, WebSocket multiplexing, persistent client mutation queues, IndexedDB, unbounded batch mutations, schema migration tooling, hard-delete GC, and chunked bootstrap.
 
+### Tooling
+
+Seam should stay framework-agnostic. The only project-level tooling requirements are:
+
+- `oxlint` for linting.
+- `oxfmt` for formatting.
+- `vitest` for tests.
+
 ### Package Layout
 
 ```text
