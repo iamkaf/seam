@@ -1,4 +1,5 @@
 import { seamD1Schema } from "../server/schema.js";
+import type { SeamScope } from "../shared/types.js";
 
 interface StoredRecord {
   id: string;
@@ -50,8 +51,13 @@ export interface TestD1 {
   seqLogEntries(): SeqLogEntry[];
   receiptEntries(): MutationReceipt[];
   failNextReceiptInsert(): void;
+  forceRecordVersion(id: string, version: number): void;
   runMutationBatch<T>(operation: () => Promise<T>): Promise<T>;
   getRecord(id: string): Promise<StoredRecord | undefined>;
+  getRecords(ids: string[]): Promise<StoredRecord[]>;
+  listRecordsForScopes(scopes: SeamScope[]): Promise<StoredRecord[]>;
+  listSeqForScopes(request: SeqScanRequest): Promise<SeqLogEntry[]>;
+  getMaxSeq(): Promise<number>;
   getMutationReceipt(
     actorId: string,
     clientMutationId: string,
@@ -82,6 +88,13 @@ interface DeleteRecordWrite {
   lastOpId: string;
 }
 
+interface SeqScanRequest {
+  scopes: SeamScope[];
+  afterSeq: number;
+  untilSeq?: number;
+  limit: number;
+}
+
 export function createTestD1(): TestD1 {
   return {
     schemaApplied: false,
@@ -102,6 +115,13 @@ export function createTestD1(): TestD1 {
     failNextReceiptInsert() {
       this.shouldFailNextReceiptInsert = true;
     },
+    forceRecordVersion(id, version) {
+      const record = this.records.find((candidate) => candidate.id === id);
+
+      if (record) {
+        record.version = version;
+      }
+    },
     async runMutationBatch(operation) {
       const records = this.records.map((record) => ({ ...record, data: { ...record.data } }));
       const seqLog = this.seqLog.map((entry) => ({ ...entry }));
@@ -118,6 +138,34 @@ export function createTestD1(): TestD1 {
     },
     async getRecord(id) {
       return this.records.find((record) => record.id === id);
+    },
+    async getRecords(ids) {
+      return ids.flatMap((id) => {
+        const record = this.records.find((candidate) => candidate.id === id);
+
+        return record ? [record] : [];
+      });
+    },
+    async listRecordsForScopes(scopes) {
+      return this.records.filter((record) =>
+        scopes.some((scope) => scope.kind === record.scopeKind && scope.id === record.scopeId),
+      );
+    },
+    async listSeqForScopes(request) {
+      return this.seqLog
+        .filter(
+          (entry) =>
+            entry.seq > request.afterSeq &&
+            (request.untilSeq === undefined || entry.seq <= request.untilSeq) &&
+            request.scopes.some(
+              (scope) => scope.kind === entry.scopeKind && scope.id === entry.scopeId,
+            ),
+        )
+        .sort((left, right) => left.seq - right.seq)
+        .slice(0, request.limit);
+    },
+    async getMaxSeq() {
+      return this.seqLog.at(-1)?.seq ?? 0;
     },
     async getMutationReceipt(actorId, clientMutationId) {
       return this.receipts.find(

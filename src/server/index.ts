@@ -64,6 +64,10 @@ export interface CreateMutationDefinition<TInput extends z.ZodType = z.ZodType> 
 export interface SeamDatabase {
   runMutationBatch<T>(operation: () => Promise<T>): Promise<T>;
   getRecord(id: string): Promise<StoredRecord | undefined>;
+  getRecords(ids: string[]): Promise<StoredRecord[]>;
+  listRecordsForScopes(scopes: SeamScope[]): Promise<StoredRecord[]>;
+  listSeqForScopes(request: SeqScanRequest): Promise<SeqLogEntry[]>;
+  getMaxSeq(): Promise<number>;
   getMutationReceipt(
     actorId: string,
     clientMutationId: string,
@@ -90,6 +94,37 @@ interface MutateRequest {
   id?: string;
   expectedVersion?: number;
   clientMutationId: string;
+}
+
+interface BootstrapRequest {
+  scopes: SeamScope[];
+}
+
+interface PullRequest {
+  afterSeq: number;
+  scopes: SeamScope[];
+  limit?: number;
+  untilSeq?: number;
+}
+
+interface SeqLogEntry {
+  seq: number;
+  opId: string;
+  scopeKind: string;
+  scopeId: string;
+  recordType: string;
+  recordId: string;
+  mutationType: string;
+  actorId: string;
+  timestamp: string;
+  version: number;
+}
+
+interface SeqScanRequest {
+  scopes: SeamScope[];
+  afterSeq: number;
+  untilSeq?: number;
+  limit: number;
 }
 
 interface StoredRecord {
@@ -164,6 +199,14 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
   return {
     fetch: async (request: Request, env?: unknown): Promise<Response> => {
       const url = new URL(request.url);
+
+      if (request.method === "POST" && url.pathname === "/seam/sync/bootstrap") {
+        return handleBootstrap(options, request);
+      }
+
+      if (request.method === "POST" && url.pathname === "/seam/sync/pull") {
+        return handlePull(options, request);
+      }
 
       if (request.method !== "POST" || url.pathname !== "/seam/mutate") {
         return json({ ok: false, error: { code: "NOT_FOUND", message: "Not found" } }, 404);
@@ -292,6 +335,71 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
       }
     },
   };
+}
+
+async function handleBootstrap(
+  options: CreateSeamServerOptions<Record<string, CreateMutationDefinition>>,
+  request: Request,
+): Promise<Response> {
+  try {
+    const body = (await request.json()) as BootstrapRequest;
+    const records = await options.db.listRecordsForScopes(body.scopes ?? []);
+    const seq = await options.db.getMaxSeq();
+
+    return json({ records: records.map(toPublicRecord), seq });
+  } catch {
+    return json({ ok: false, error: { code: "INVALID", message: "Invalid request" } }, 400);
+  }
+}
+
+async function handlePull(
+  options: CreateSeamServerOptions<Record<string, CreateMutationDefinition>>,
+  request: Request,
+): Promise<Response> {
+  try {
+    const body = (await request.json()) as PullRequest;
+    const limit = Math.min(body.limit ?? 500, 1000);
+    const entries = await options.db.listSeqForScopes({
+      scopes: body.scopes ?? [],
+      afterSeq: body.afterSeq,
+      untilSeq: body.untilSeq,
+      limit,
+    });
+    const highestByRecord = new Map<string, SeqLogEntry>();
+
+    for (const entry of entries) {
+      const previous = highestByRecord.get(entry.recordId);
+
+      if (!previous || previous.version < entry.version) {
+        highestByRecord.set(entry.recordId, entry);
+      }
+    }
+
+    const records = await options.db.getRecords([...highestByRecord.keys()]);
+    const materialized = records.filter((record) => {
+      const scanned = highestByRecord.get(record.id);
+
+      return scanned && record.version >= scanned.version;
+    });
+    const blocked =
+      records.length !== highestByRecord.size || materialized.length !== records.length;
+
+    if (blocked) {
+      return json({ records: [], seq: body.afterSeq, hasMore: true });
+    }
+
+    const hasMore = entries.length === limit;
+    const responseSeq =
+      entries.at(-1)?.seq ?? (body.untilSeq !== undefined ? body.untilSeq : body.afterSeq);
+
+    return json({
+      records: materialized.map(toPublicRecord),
+      seq: responseSeq,
+      hasMore,
+    });
+  } catch {
+    return json({ ok: false, error: { code: "INVALID", message: "Invalid request" } }, 400);
+  }
 }
 
 async function hashMutationRequest(body: MutateRequest): Promise<string> {
