@@ -29,10 +29,12 @@ export type SeamErrorCode =
 
 export class SeamError extends Error {
   readonly code: SeamErrorCode;
+  readonly record?: SeamRecord;
 
-  constructor(code: SeamErrorCode, message: string = code) {
+  constructor(code: SeamErrorCode, message: string = code, record?: SeamRecord) {
     super(message);
     this.name = "SeamError";
     this.code = code;
+    this.record = record;
   }
 }

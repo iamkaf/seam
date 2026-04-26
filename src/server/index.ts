@@ -21,8 +21,25 @@ export interface CreateWrite {
   id?: string;
 }
 
+export interface UpdateWrite {
+  op: "update";
+  id: string;
+  type: string;
+  expectedVersion: number;
+  data: Record<string, unknown>;
+}
+
+export interface DeleteWrite {
+  op: "delete";
+  id: string;
+  type: string;
+  expectedVersion: number;
+}
+
+export type SeamWrite = CreateWrite | UpdateWrite | DeleteWrite;
+
 export interface MutationCommit {
-  writes: CreateWrite[];
+  writes: SeamWrite[];
   primaryRecordId?: string;
 }
 
@@ -33,18 +50,22 @@ type ScopeResolver<TInput> = {
 type MutationExecutor<TInput> = {
   execute(
     input: TInput,
-    ctx: { seam: SeamContext; scope: SeamScope },
+    ctx: { seam: SeamContext; scope: SeamScope; current: SeamRecord },
   ): MutationCommit | Promise<MutationCommit>;
 }["execute"];
 
 export interface CreateMutationDefinition<TInput extends z.ZodType = z.ZodType> {
+  record?: string;
   input: TInput;
-  scope: ScopeResolver<z.output<TInput>>;
+  scope?: ScopeResolver<z.output<TInput>>;
   execute: MutationExecutor<z.output<TInput>>;
 }
 
 export interface SeamDatabase {
+  getRecord(id: string): Promise<StoredRecord | undefined>;
   createRecord(record: StoredRecord): Promise<void>;
+  updateRecord(write: UpdateRecordWrite): Promise<StoredRecord | undefined>;
+  deleteRecord(write: DeleteRecordWrite): Promise<StoredRecord | undefined>;
   appendSeqLog(entry: SeqLogInsert): Promise<number>;
 }
 
@@ -60,6 +81,8 @@ export interface CreateSeamServerOptions<
 interface MutateRequest {
   mutation: string;
   input: Record<string, unknown>;
+  id?: string;
+  expectedVersion?: number;
   clientMutationId: string;
 }
 
@@ -90,6 +113,25 @@ interface SeqLogInsert {
   version: number;
 }
 
+interface UpdateRecordWrite {
+  id: string;
+  type: string;
+  expectedVersion: number;
+  data: Record<string, unknown>;
+  updatedAt: string;
+  updatedBy: string;
+  lastOpId: string;
+}
+
+interface DeleteRecordWrite {
+  id: string;
+  type: string;
+  expectedVersion: number;
+  deletedAt: string;
+  updatedBy: string;
+  lastOpId: string;
+}
+
 export function defineRecordType<TSchema extends z.ZodType>(
   name: string,
   definition: { schema: TSchema },
@@ -110,15 +152,18 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
         return json({ ok: false, error: { code: "NOT_FOUND", message: "Not found" } }, 404);
       }
 
+      let body: Partial<MutateRequest> = {};
+
       try {
-        const body = (await request.json()) as MutateRequest;
-        const mutation = options.mutations[body.mutation];
+        const requestBody = (await request.json()) as MutateRequest;
+        body = requestBody;
+        const mutation = options.mutations[requestBody.mutation];
 
         if (!mutation) {
           throw new SeamError("INVALID", "Unknown mutation");
         }
 
-        if (!body.clientMutationId) {
+        if (!requestBody.clientMutationId) {
           throw new SeamError("INVALID", "clientMutationId required");
         }
 
@@ -128,14 +173,23 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
           throw new SeamError("UNAUTHORIZED");
         }
 
-        const input = mutation.input.parse(body.input);
-        const scope = mutation.scope(input);
-        const commit = await mutation.execute(input, { seam, scope });
+        const input = mutation.input.parse(requestBody.input);
+        const current = mutation.record
+          ? await loadCurrent(options.db, requestBody, mutation.record)
+          : undefined;
+        const scope = current
+          ? { kind: current.scopeKind, id: current.scopeId }
+          : resolveCreateScope(mutation, input);
+        const commit = await mutation.execute(input, {
+          seam,
+          scope,
+          current: current ? toPublicRecord(current) : (undefined as unknown as SeamRecord),
+        });
 
-        if (commit.writes.length !== 1 || commit.writes[0]?.op !== "create") {
+        if (commit.writes.length !== 1) {
           throw new SeamError(
             "INVALID",
-            "Only single create mutations are supported in this slice",
+            "Only single-record mutations are supported in this slice",
           );
         }
 
@@ -146,32 +200,23 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
           throw new SeamError("INVALID", "Unknown record type");
         }
 
-        const data = recordType.schema.parse(write.data) as Record<string, unknown>;
-        const id = write.id ?? crypto.randomUUID();
         const now = new Date().toISOString();
         const opId = crypto.randomUUID();
-        const storedRecord: StoredRecord = {
-          id,
-          type: write.type,
-          scopeKind: write.scope.kind,
-          scopeId: write.scope.id,
-          version: 1,
-          data,
-          createdAt: now,
-          createdBy: seam.actorId,
-          updatedAt: now,
-          updatedBy: seam.actorId,
-          lastOpId: opId,
-        };
-
-        await options.db.createRecord(storedRecord);
+        const storedRecord = await commitWrite(
+          options.db,
+          write,
+          recordType,
+          seam.actorId,
+          now,
+          opId,
+        );
         const seq = await options.db.appendSeqLog({
           opId,
           scopeKind: storedRecord.scopeKind,
           scopeId: storedRecord.scopeId,
           recordType: storedRecord.type,
           recordId: storedRecord.id,
-          mutationType: body.mutation,
+          mutationType: requestBody.mutation,
           actorId: seam.actorId,
           timestamp: now,
           version: storedRecord.version,
@@ -184,17 +229,125 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
           records: [record],
           record,
           seq,
-          clientMutationId: body.clientMutationId,
+          clientMutationId: requestBody.clientMutationId,
         });
       } catch (error) {
         if (error instanceof SeamError) {
-          return json({ ok: false, error: { code: error.code, message: error.message } }, 400);
+          return json(
+            {
+              ok: false,
+              error: { code: error.code, message: error.message, record: error.record },
+              clientMutationId: body.clientMutationId,
+            },
+            400,
+          );
         }
 
         return json({ ok: false, error: { code: "INVALID", message: "Invalid request" } }, 400);
       }
     },
   };
+}
+
+function resolveCreateScope<TInput>(
+  mutation: CreateMutationDefinition<z.ZodType<TInput>>,
+  input: TInput,
+): SeamScope {
+  if (!mutation.scope) {
+    throw new SeamError("INVALID", "scope required");
+  }
+
+  return mutation.scope(input);
+}
+
+async function loadCurrent(
+  db: SeamDatabase,
+  body: MutateRequest,
+  recordType: string,
+): Promise<StoredRecord> {
+  if (!body.id || body.expectedVersion === undefined) {
+    throw new SeamError("INVALID", "id and expectedVersion required");
+  }
+
+  const current = await db.getRecord(body.id);
+
+  if (!current || current.deletedAt) {
+    throw new SeamError("NOT_FOUND");
+  }
+
+  if (current.type !== recordType) {
+    throw new SeamError("TYPE_MISMATCH");
+  }
+
+  if (current.version !== body.expectedVersion) {
+    throw new SeamError("VERSION_CONFLICT", "Version conflict", toPublicRecord(current));
+  }
+
+  return current;
+}
+
+async function commitWrite(
+  db: SeamDatabase,
+  write: SeamWrite,
+  recordType: RecordType,
+  actorId: string,
+  now: string,
+  opId: string,
+): Promise<StoredRecord> {
+  if (write.op === "create") {
+    const data = recordType.schema.parse(write.data) as Record<string, unknown>;
+    const storedRecord: StoredRecord = {
+      id: write.id ?? crypto.randomUUID(),
+      type: write.type,
+      scopeKind: write.scope.kind,
+      scopeId: write.scope.id,
+      version: 1,
+      data,
+      createdAt: now,
+      createdBy: actorId,
+      updatedAt: now,
+      updatedBy: actorId,
+      lastOpId: opId,
+    };
+
+    await db.createRecord(storedRecord);
+    return storedRecord;
+  }
+
+  if (write.op === "delete") {
+    const deleted = await db.deleteRecord({
+      id: write.id,
+      type: write.type,
+      expectedVersion: write.expectedVersion,
+      deletedAt: now,
+      updatedBy: actorId,
+      lastOpId: opId,
+    });
+
+    if (!deleted) {
+      throw new SeamError("VERSION_CONFLICT", "Version conflict");
+    }
+
+    return deleted;
+  }
+
+  const data = recordType.schema.parse(write.data) as Record<string, unknown>;
+
+  const updated = await db.updateRecord({
+    id: write.id,
+    type: write.type,
+    expectedVersion: write.expectedVersion,
+    data,
+    updatedAt: now,
+    updatedBy: actorId,
+    lastOpId: opId,
+  });
+
+  if (!updated) {
+    throw new SeamError("VERSION_CONFLICT", "Version conflict");
+  }
+
+  return updated;
 }
 
 function toPublicRecord(record: StoredRecord): SeamRecord {

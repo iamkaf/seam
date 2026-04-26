@@ -35,8 +35,30 @@ export interface TestD1 {
   seqLog: SeqLogEntry[];
   tableNames(): string[];
   seqLogEntries(): SeqLogEntry[];
+  getRecord(id: string): Promise<StoredRecord | undefined>;
   createRecord(record: StoredRecord): Promise<void>;
+  updateRecord(write: UpdateRecordWrite): Promise<StoredRecord | undefined>;
+  deleteRecord(write: DeleteRecordWrite): Promise<StoredRecord | undefined>;
   appendSeqLog(entry: Omit<SeqLogEntry, "seq">): Promise<number>;
+}
+
+interface UpdateRecordWrite {
+  id: string;
+  type: string;
+  expectedVersion: number;
+  data: Record<string, unknown>;
+  updatedAt: string;
+  updatedBy: string;
+  lastOpId: string;
+}
+
+interface DeleteRecordWrite {
+  id: string;
+  type: string;
+  expectedVersion: number;
+  deletedAt: string;
+  updatedBy: string;
+  lastOpId: string;
 }
 
 export function createTestD1(): TestD1 {
@@ -51,8 +73,51 @@ export function createTestD1(): TestD1 {
     seqLogEntries() {
       return [...this.seqLog];
     },
+    async getRecord(id) {
+      return this.records.find((record) => record.id === id);
+    },
     async createRecord(record) {
       this.records.push(record);
+    },
+    async updateRecord(write) {
+      const record = this.records.find(
+        (candidate) =>
+          candidate.id === write.id &&
+          candidate.type === write.type &&
+          candidate.version === write.expectedVersion,
+      );
+
+      if (!record) {
+        return undefined;
+      }
+
+      record.version += 1;
+      record.data = write.data;
+      record.updatedAt = write.updatedAt;
+      record.updatedBy = write.updatedBy;
+      record.lastOpId = write.lastOpId;
+
+      return record;
+    },
+    async deleteRecord(write) {
+      const record = this.records.find(
+        (candidate) =>
+          candidate.id === write.id &&
+          candidate.type === write.type &&
+          candidate.version === write.expectedVersion,
+      );
+
+      if (!record) {
+        return undefined;
+      }
+
+      record.version += 1;
+      record.deletedAt = write.deletedAt;
+      record.updatedAt = write.deletedAt;
+      record.updatedBy = write.updatedBy;
+      record.lastOpId = write.lastOpId;
+
+      return record;
     },
     async appendSeqLog(entry) {
       const seq = this.seqLog.length + 1;
