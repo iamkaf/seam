@@ -92,3 +92,9 @@ function Tasks() {
 - Send `clientMutationId` on every mutation; the client generates it by default.
 - Pass `expectedVersion` for updates and deletes.
 - Use `importRecords()` for large setup or import flows.
+
+## 7. Durable App Events
+
+Mutation commits can include app events. Seam writes them to the durable outbox in the same batch as records and `seq_log` rows.
+
+Outbox consumers process rows with at-least-once delivery. Consumers must be idempotent: if processing fails before the cursor advances, the same row is delivered again on the next `consumeOutbox()` call.

@@ -49,11 +49,18 @@ export interface MutationCommit {
   writes: SeamWrite[];
   primaryRecordId?: string;
   effects?: CommitEffect[];
+  events?: MutationEvent[];
 }
 
 export interface CommitEffect {
   tableName: string;
   execute(): Promise<void> | void;
+}
+
+export interface MutationEvent {
+  type: string;
+  payload: Record<string, unknown>;
+  recordId?: string;
 }
 
 type ScopeResolver<TInput> = {
@@ -100,6 +107,10 @@ export interface SeamDatabase {
   deleteRecord(write: DeleteRecordWrite): Promise<StoredRecord | undefined>;
   appendSeqLog(entry: SeqLogInsert): Promise<number>;
   createMutationReceipt(receipt: MutationReceipt): Promise<void>;
+  appendOutbox(entry: OutboxInsert): Promise<number>;
+  listOutboxAfter(lastOutboxId: number, limit: number): Promise<OutboxEntry[]>;
+  getOutboxConsumerCursor(consumerName: string): Promise<number>;
+  setOutboxConsumerCursor(consumerName: string, lastOutboxId: number): Promise<void>;
 }
 
 export interface MutateRequest {
@@ -196,4 +207,21 @@ interface MutationReceipt {
   scopeId: string;
   responseJson: string;
   createdAt: string;
+}
+
+interface OutboxInsert {
+  opId: string;
+  seq: number;
+  scopeKind: string;
+  scopeId: string;
+  recordType?: string;
+  recordId?: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  actorId: string;
+  createdAt: string;
+}
+
+export interface OutboxEntry extends OutboxInsert {
+  id: number;
 }

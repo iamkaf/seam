@@ -41,6 +41,33 @@ interface MutationReceipt {
   createdAt: string;
 }
 
+interface OutboxEntry {
+  id: number;
+  opId: string;
+  seq: number;
+  scopeKind: string;
+  scopeId: string;
+  recordType?: string;
+  recordId?: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  actorId: string;
+  createdAt: string;
+}
+
+interface OutboxInsert {
+  opId: string;
+  seq: number;
+  scopeKind: string;
+  scopeId: string;
+  recordType?: string;
+  recordId?: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  actorId: string;
+  createdAt: string;
+}
+
 export interface TestD1 {
   schemaApplied: boolean;
   tables: Set<string>;
@@ -48,10 +75,14 @@ export interface TestD1 {
   records: StoredRecord[];
   seqLog: SeqLogEntry[];
   receipts: MutationReceipt[];
+  outbox: OutboxEntry[];
+  outboxConsumerCursors: Map<string, number>;
   shouldFailNextReceiptInsert: boolean;
   tableNames(): string[];
   seqLogEntries(): SeqLogEntry[];
   receiptEntries(): MutationReceipt[];
+  outboxEntries(): OutboxEntry[];
+  consumerCursor(consumerName: string): number;
   createAppTable(name: string): void;
   appRows(name: string): Record<string, unknown>[];
   prepareAppInsert(tableName: string, row: Record<string, unknown>): CommitEffect;
@@ -72,6 +103,10 @@ export interface TestD1 {
   deleteRecord(write: DeleteRecordWrite): Promise<StoredRecord | undefined>;
   appendSeqLog(entry: Omit<SeqLogEntry, "seq">): Promise<number>;
   createMutationReceipt(receipt: MutationReceipt): Promise<void>;
+  appendOutbox(entry: OutboxInsert): Promise<number>;
+  listOutboxAfter(lastOutboxId: number, limit: number): Promise<OutboxEntry[]>;
+  getOutboxConsumerCursor(consumerName: string): Promise<number>;
+  setOutboxConsumerCursor(consumerName: string, lastOutboxId: number): Promise<void>;
 }
 
 interface UpdateRecordWrite {
@@ -108,6 +143,8 @@ export function createTestD1(): TestD1 {
     records: [],
     seqLog: [],
     receipts: [],
+    outbox: [],
+    outboxConsumerCursors: new Map(),
     shouldFailNextReceiptInsert: false,
     tableNames() {
       return [...this.tables].sort();
@@ -117,6 +154,12 @@ export function createTestD1(): TestD1 {
     },
     receiptEntries() {
       return [...this.receipts];
+    },
+    outboxEntries() {
+      return [...this.outbox];
+    },
+    consumerCursor(consumerName) {
+      return this.outboxConsumerCursors.get(consumerName) ?? 0;
     },
     createAppTable(name) {
       this.appTables.set(name, []);
@@ -152,6 +195,8 @@ export function createTestD1(): TestD1 {
       const records = this.records.map((record) => ({ ...record, data: { ...record.data } }));
       const seqLog = this.seqLog.map((entry) => ({ ...entry }));
       const receipts = this.receipts.map((receipt) => ({ ...receipt }));
+      const outbox = this.outbox.map((entry) => ({ ...entry, payload: { ...entry.payload } }));
+      const outboxConsumerCursors = new Map(this.outboxConsumerCursors);
       const appTables = new Map(
         [...this.appTables.entries()].map(([name, rows]) => [
           name,
@@ -165,6 +210,8 @@ export function createTestD1(): TestD1 {
         this.records = records;
         this.seqLog = seqLog;
         this.receipts = receipts;
+        this.outbox = outbox;
+        this.outboxConsumerCursors = outboxConsumerCursors;
         this.appTables = appTables;
         throw error;
       }
@@ -260,6 +307,20 @@ export function createTestD1(): TestD1 {
       }
 
       this.receipts.push(receipt);
+    },
+    async appendOutbox(entry) {
+      const id = this.outbox.length + 1;
+      this.outbox.push({ ...entry, id });
+      return id;
+    },
+    async listOutboxAfter(lastOutboxId, limit) {
+      return this.outbox.filter((entry) => entry.id > lastOutboxId).slice(0, limit);
+    },
+    async getOutboxConsumerCursor(consumerName) {
+      return this.consumerCursor(consumerName);
+    },
+    async setOutboxConsumerCursor(consumerName, lastOutboxId) {
+      this.outboxConsumerCursors.set(consumerName, lastOutboxId);
     },
   };
 }

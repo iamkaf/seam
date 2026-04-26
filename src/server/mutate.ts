@@ -138,6 +138,7 @@ export async function handleMutate<TMutations extends Record<string, CreateMutat
       }
 
       const records = storedRecords.map(toPublicRecord);
+      const recordById = new Map(storedRecords.map((record) => [record.id, record]));
       const successfulResponse = {
         ok: true,
         records,
@@ -156,6 +157,23 @@ export async function handleMutate<TMutations extends Record<string, CreateMutat
         responseJson: JSON.stringify(successfulResponse),
         createdAt: now,
       });
+
+      for (const event of commit.events ?? []) {
+        const eventRecord = event.recordId ? recordById.get(event.recordId) : storedRecords[0];
+
+        await options.db.appendOutbox({
+          opId,
+          seq,
+          scopeKind: scope.kind,
+          scopeId: scope.id,
+          recordType: eventRecord?.type,
+          recordId: event.recordId ?? eventRecord?.id,
+          eventType: event.type,
+          payload: event.payload,
+          actorId,
+          createdAt: now,
+        });
+      }
 
       return successfulResponse;
     });
