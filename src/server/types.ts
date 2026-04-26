@@ -111,6 +111,14 @@ export interface SeamDatabase {
   listOutboxAfter(lastOutboxId: number, limit: number): Promise<OutboxEntry[]>;
   getOutboxConsumerCursor(consumerName: string): Promise<number>;
   setOutboxConsumerCursor(consumerName: string, lastOutboxId: number): Promise<void>;
+  getMinRetainedSeq(): Promise<number>;
+  pruneSeqLog(beforeSeq: number): Promise<PruneSeqLogResult>;
+}
+
+interface PruneSeqLogResult {
+  minRetainedSeq: number;
+  prunedSeqLogEntries: number;
+  prunedReceipts: number;
 }
 
 export interface MutateRequest {

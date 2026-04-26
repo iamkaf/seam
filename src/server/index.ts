@@ -4,6 +4,7 @@ import { json } from "./http.js";
 import { importRecords } from "./import.js";
 import { handleMutate } from "./mutate.js";
 import { consumeOutbox } from "./outbox.js";
+import { pruneSeqLog } from "./retention.js";
 import { handleBootstrap, handlePull } from "./sync.js";
 import type { CreateMutationDefinition, CreateSeamServerOptions, RecordType } from "./types.js";
 
@@ -32,6 +33,7 @@ export type {
   ImportRecordsResult,
 } from "./import.js";
 export type { ConsumeOutboxOptions, ConsumeOutboxResult } from "./outbox.js";
+export type { PruneSeqLogOptions, PruneSeqLogResult } from "./retention.js";
 
 export function defineRecordType<TSchema extends z.ZodType>(
   name: string,
@@ -50,6 +52,8 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
       importRecords(options.db, recordTypes, importOptions),
     consumeOutbox: (consumeOptions: Parameters<typeof consumeOutbox>[1]) =>
       consumeOutbox(options.db, consumeOptions),
+    pruneSeqLog: (pruneOptions: Parameters<typeof pruneSeqLog>[1]) =>
+      pruneSeqLog(options.db, pruneOptions),
     fetch: async (request: Request, env?: unknown): Promise<Response> => {
       const url = new URL(request.url);
 

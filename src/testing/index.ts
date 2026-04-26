@@ -77,12 +77,14 @@ export interface TestD1 {
   receipts: MutationReceipt[];
   outbox: OutboxEntry[];
   outboxConsumerCursors: Map<string, number>;
+  retainedSeqFloor: number;
   shouldFailNextReceiptInsert: boolean;
   tableNames(): string[];
   seqLogEntries(): SeqLogEntry[];
   receiptEntries(): MutationReceipt[];
   outboxEntries(): OutboxEntry[];
   consumerCursor(consumerName: string): number;
+  minRetainedSeq(): number;
   createAppTable(name: string): void;
   appRows(name: string): Record<string, unknown>[];
   prepareAppInsert(tableName: string, row: Record<string, unknown>): CommitEffect;
@@ -107,6 +109,14 @@ export interface TestD1 {
   listOutboxAfter(lastOutboxId: number, limit: number): Promise<OutboxEntry[]>;
   getOutboxConsumerCursor(consumerName: string): Promise<number>;
   setOutboxConsumerCursor(consumerName: string, lastOutboxId: number): Promise<void>;
+  getMinRetainedSeq(): Promise<number>;
+  pruneSeqLog(beforeSeq: number): Promise<PruneSeqLogResult>;
+}
+
+interface PruneSeqLogResult {
+  minRetainedSeq: number;
+  prunedSeqLogEntries: number;
+  prunedReceipts: number;
 }
 
 interface UpdateRecordWrite {
@@ -145,6 +155,7 @@ export function createTestD1(): TestD1 {
     receipts: [],
     outbox: [],
     outboxConsumerCursors: new Map(),
+    retainedSeqFloor: 0,
     shouldFailNextReceiptInsert: false,
     tableNames() {
       return [...this.tables].sort();
@@ -160,6 +171,9 @@ export function createTestD1(): TestD1 {
     },
     consumerCursor(consumerName) {
       return this.outboxConsumerCursors.get(consumerName) ?? 0;
+    },
+    minRetainedSeq() {
+      return this.retainedSeqFloor;
     },
     createAppTable(name) {
       this.appTables.set(name, []);
@@ -322,6 +336,23 @@ export function createTestD1(): TestD1 {
     async setOutboxConsumerCursor(consumerName, lastOutboxId) {
       this.outboxConsumerCursors.set(consumerName, lastOutboxId);
     },
+    async getMinRetainedSeq() {
+      return this.retainedSeqFloor;
+    },
+    async pruneSeqLog(beforeSeq) {
+      const previousSeqLogCount = this.seqLog.length;
+      const previousReceiptCount = this.receipts.length;
+
+      this.seqLog = this.seqLog.filter((entry) => entry.seq >= beforeSeq);
+      this.receipts = this.receipts.filter((receipt) => receipt.seq >= beforeSeq);
+      this.retainedSeqFloor = Math.max(this.retainedSeqFloor, beforeSeq);
+
+      return {
+        minRetainedSeq: this.retainedSeqFloor,
+        prunedSeqLogEntries: previousSeqLogCount - this.seqLog.length,
+        prunedReceipts: previousReceiptCount - this.receipts.length,
+      };
+    },
   };
 }
 
@@ -340,5 +371,6 @@ export async function migrateSeamD1(db: TestD1): Promise<void> {
     "seam_batch_assertions",
     "mutation_receipts",
     "outbox",
+    "seam_retention",
   ]);
 }

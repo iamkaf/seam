@@ -51,6 +51,12 @@ export async function handlePull<TMutations extends Record<string, CreateMutatio
     const body = (await request.json()) as PullRequest;
     const ctx = await options.resolveContext(request, env);
     const scopes = body.scopes ?? [];
+    const minRetainedSeq = await options.db.getMinRetainedSeq();
+
+    if (body.afterSeq < minRetainedSeq) {
+      return json({ ok: false, error: { code: "CURSOR_EXPIRED", message: "CURSOR_EXPIRED" } }, 400);
+    }
+
     const authorizedScopes = [];
     const revokedScopes = [];
 

@@ -14,6 +14,7 @@ describe("create mutation flow", () => {
       "outbox",
       "records",
       "seam_batch_assertions",
+      "seam_retention",
       "seq_log",
     ]);
   });

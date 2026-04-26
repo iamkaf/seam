@@ -78,4 +78,9 @@ CREATE TABLE outbox (
 ) STRICT;
 
 CREATE INDEX idx_outbox_seq ON outbox(seq);
+
+CREATE TABLE seam_retention (
+  name TEXT PRIMARY KEY,
+  min_retained_seq INTEGER NOT NULL
+) STRICT;
 `;
