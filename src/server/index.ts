@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import { SeamError } from "../shared/types.js";
 import { json } from "./http.js";
+import { importRecords } from "./import.js";
 import { handleMutate } from "./mutate.js";
 import { handleBootstrap, handlePull } from "./sync.js";
 import type { CreateMutationDefinition, CreateSeamServerOptions, RecordType } from "./types.js";
@@ -21,6 +22,12 @@ export type {
   SeamWrite,
   UpdateWrite,
 } from "./types.js";
+export type {
+  ImportChunkResult,
+  ImportRecord,
+  ImportRecordsOptions,
+  ImportRecordsResult,
+} from "./import.js";
 
 export function defineRecordType<TSchema extends z.ZodType>(
   name: string,
@@ -35,6 +42,8 @@ export function createSeamServer<TMutations extends Record<string, CreateMutatio
   const recordTypes = new Map(options.records.map((record) => [record.name, record]));
 
   return {
+    importRecords: (importOptions: Parameters<typeof importRecords>[2]) =>
+      importRecords(options.db, recordTypes, importOptions),
     fetch: async (request: Request, env?: unknown): Promise<Response> => {
       const url = new URL(request.url);
 
